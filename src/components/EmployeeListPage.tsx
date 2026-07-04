@@ -3,13 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, Search, ArrowUpDown, ChevronLeft, ChevronRight, 
   Trash2, Edit2, Eye, Filter, RotateCcw, AlertTriangle, LogOut, Briefcase,
-  Users, TrendingUp, Building2, Download, UserCheck, X, Check, ChevronDown, Calendar, Mail, FileText, Tag, Clock
+  Users, TrendingUp, Building2, Download, UserCheck, X, Check, ChevronDown, Calendar, Mail, FileText, Tag, Clock, Upload, EyeOff, BarChart2, PieChart as PieIcon, LineChart as LineIcon
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell, PieChart, Pie, AreaChart, Area } from 'recharts';
 import { Employee, SearchState } from '../types';
 import { DUMMY_GROUPS, DUMMY_STATUSES } from '../data/dummyEmployees';
 
@@ -23,6 +25,7 @@ interface EmployeeListPageProps {
   onTriggerNotification: (message: string, type: 'yellow' | 'red' | 'green') => void;
   onDeleteEmployee: (username: string) => void;
   onUpdateEmployee: (employee: Employee) => void;
+  onImportEmployees: (employees: Employee[]) => void;
 }
 
 export default function EmployeeListPage({
@@ -34,8 +37,18 @@ export default function EmployeeListPage({
   onLogoutClick,
   onTriggerNotification,
   onDeleteEmployee,
-  onUpdateEmployee
+  onUpdateEmployee,
+  onImportEmployees
 }: EmployeeListPageProps) {
+
+  // Statistics Expand/Collapse State
+  const [showStatsVisuals, setShowStatsVisuals] = useState(false);
+
+  // CSV Import States
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importRows, setImportRows] = useState<{ employee: Employee; errors: string[]; isValid: boolean }[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Quick Edit Modal States
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
@@ -238,7 +251,48 @@ export default function EmployeeListPage({
     return { total, active, avgSalary, topDept, maxCount };
   }, [employees]);
 
-  // Export Filtered Employees to CSV
+  // Analytics chart calculations
+  const chartsData = useMemo(() => {
+    const depts: Record<string, number> = {};
+    const statuses: Record<string, number> = {};
+    const salaryRanges = [
+      { name: '< 5M', min: 0, max: 5000000, count: 0 },
+      { name: '5M-10M', min: 5000000, max: 10000000, count: 0 },
+      { name: '10M-15M', min: 10000000, max: 15000000, count: 0 },
+      { name: '15M-20M', min: 15000000, max: 20000000, count: 0 },
+      { name: '> 20M', min: 20000000, max: Infinity, count: 0 }
+    ];
+    
+    employees.forEach(e => {
+      depts[e.group] = (depts[e.group] || 0) + 1;
+      statuses[e.status] = (statuses[e.status] || 0) + 1;
+      
+      const sal = e.basicSalary;
+      const range = salaryRanges.find(r => sal >= r.min && sal < r.max);
+      if (range) range.count++;
+    });
+    
+    const departmentData = Object.entries(depts).map(([name, count]) => ({
+      name,
+      count
+    })).sort((a, b) => b.count - a.count);
+    
+    const statusColors: Record<string, string> = {
+      'Active': '#10B981',
+      'Inactive': '#EF4444',
+      'Contract': '#F59E0B',
+    };
+    
+    const statusData = Object.entries(statuses).map(([name, value]) => ({
+      name,
+      value,
+      color: statusColors[name] || '#3B82F6'
+    }));
+    
+    return { departmentData, statusData, salaryRangeData: salaryRanges };
+  }, [employees]);
+
+  // Export Filtered Employees to CSV (Excel Friendly UTF-8 Semicolon format)
   const handleExportCSV = () => {
     if (filteredEmployees.length === 0) {
       onTriggerNotification('Tidak ada data karyawan tersaring yang bisa diekspor.', 'red');
@@ -247,7 +301,8 @@ export default function EmployeeListPage({
     
     const headers = ['Username', 'First Name', 'Last Name', 'Email', 'Birth Date', 'Basic Salary', 'Group', 'Status', 'Description'];
     const csvRows = [
-      headers.join(','),
+      'sep=;',
+      headers.join(';'),
       ...filteredEmployees.map(emp => [
         `"${emp.username.replace(/"/g, '""')}"`,
         `"${emp.firstName.replace(/"/g, '""')}"`,
@@ -258,19 +313,305 @@ export default function EmployeeListPage({
         `"${emp.group.replace(/"/g, '""')}"`,
         `"${emp.status.replace(/"/g, '""')}"`,
         `"${(emp.description || '').replace(/"/g, '""')}"`
-      ].join(','))
+      ].join(';'))
     ];
     
-    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + csvRows.join("\n");
-    const encodedUri = encodeURI(csvContent);
+    const csvString = csvRows.join("\r\n");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `empowerhr_filtered_employees_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `empowerhr_filtered_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
     
     onTriggerNotification(`Berhasil mengekspor ${filteredEmployees.length} data karyawan ke file CSV!`, 'green');
+  };
+
+  // Export Filtered Employees to Native Excel (.xlsx) using SheetJS
+  const handleExportExcel = () => {
+    if (filteredEmployees.length === 0) {
+      onTriggerNotification('Tidak ada data karyawan tersaring yang bisa diekspor.', 'red');
+      return;
+    }
+    
+    const dataToExport = filteredEmployees.map((emp, index) => ({
+      'No.': index + 1,
+      'Username': emp.username,
+      'Nama Depan': emp.firstName,
+      'Nama Belakang': emp.lastName,
+      'Email': emp.email,
+      'Tanggal Lahir': emp.birthDate.substring(0, 10),
+      'Gaji Pokok (IDR)': emp.basicSalary,
+      'Departemen': emp.group,
+      'Status': emp.status,
+      'Deskripsi Waktu bergabung': emp.description || ''
+    }));
+    
+    const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Data Karyawan');
+    
+    // Auto-adjust column widths
+    const max_len = dataToExport.reduce((acc, row) => {
+      Object.keys(row).forEach((key, col_idx) => {
+        const val_str = String(row[key as keyof typeof row] || '');
+        const len = Math.max(val_str.length, key.length);
+        acc[col_idx] = Math.max(acc[col_idx] || 0, len);
+      });
+      return acc;
+    }, [] as number[]);
+    worksheet['!cols'] = max_len.map(w => ({ w: w + 2 }));
+    
+    XLSX.writeFile(workbook, `empowerhr_employees_${new Date().toISOString().split('T')[0]}.xlsx`);
+    onTriggerNotification(`Berhasil mengekspor ${filteredEmployees.length} data karyawan ke file Excel (.xlsx)!`, 'green');
+  };
+
+  // CSV Importer Engine
+  const handleCSVImportSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    processCSVFile(file);
+  };
+
+  const processCSVFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+      
+      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+      if (lines.length === 0) {
+        onTriggerNotification('File CSV kosong.', 'red');
+        return;
+      }
+
+      // Check for custom delimiter indicator (sep=;)
+      let startIndex = 0;
+      let delimiter = ',';
+      if (lines[0].toLowerCase().startsWith('sep=')) {
+        delimiter = lines[0].split('=')[1] || ',';
+        startIndex = 1;
+      } else {
+        // Auto-detect delimiter
+        const commas = (lines[0].match(/,/g) || []).length;
+        const semicolons = (lines[0].match(/;/g) || []).length;
+        delimiter = semicolons > commas ? ';' : ',';
+      }
+
+      const headerLine = lines[startIndex];
+      if (!headerLine) {
+        onTriggerNotification('Header CSV tidak valid.', 'red');
+        return;
+      }
+
+      const headers = parseCSVLine(headerLine, delimiter).map(h => h.toLowerCase().replace(/['"’“”]/g, '').trim());
+      
+      const colMap = {
+        username: headers.findIndex(h => h.includes('username') || h.includes('id') || h.includes('nama pengguna')),
+        firstName: headers.findIndex(h => h.includes('first name') || h.includes('nama depan') || h.includes('firstname')),
+        lastName: headers.findIndex(h => h.includes('last name') || h.includes('nama belakang') || h.includes('lastname')),
+        email: headers.findIndex(h => h.includes('email') || h.includes('surel')),
+        birthDate: headers.findIndex(h => h.includes('birth date') || h.includes('tanggal lahir') || h.includes('birthdate') || h.includes('tgl lahir')),
+        basicSalary: headers.findIndex(h => h.includes('salary') || h.includes('gaji') || h.includes('gaji pokok') || h.includes('basicsalary')),
+        group: headers.findIndex(h => h.includes('group') || h.includes('grup') || h.includes('departemen') || h.includes('department')),
+        status: headers.findIndex(h => h.includes('status')),
+        description: headers.findIndex(h => h.includes('description') || h.includes('deskripsi') || h.includes('keterangan') || h.includes('join date'))
+      };
+
+      const missingMandatory: string[] = [];
+      if (colMap.firstName === -1) missingMandatory.push('First Name (Nama Depan)');
+      if (colMap.email === -1) missingMandatory.push('Email');
+      if (colMap.basicSalary === -1) missingMandatory.push('Basic Salary (Gaji Pokok)');
+      if (colMap.group === -1) missingMandatory.push('Group (Departemen)');
+      if (colMap.status === -1) missingMandatory.push('Status');
+
+      if (missingMandatory.length > 0) {
+        onTriggerNotification(`Header CSV tidak cocok. Kolom berikut wajib ada: ${missingMandatory.join(', ')}`, 'red');
+        return;
+      }
+
+      const parsedRows: { employee: Employee; errors: string[]; isValid: boolean }[] = [];
+
+      for (let i = startIndex + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+
+        const cells = parseCSVLine(line, delimiter);
+        if (cells.length === 0 || (cells.length === 1 && cells[0] === '')) continue;
+
+        const errors: string[] = [];
+        const getVal = (colIdx: number, defaultVal: string = '') => {
+          if (colIdx === -1 || colIdx >= cells.length) return defaultVal;
+          return cells[colIdx].replace(/^["']|["']$/g, '').trim();
+        };
+
+        const rawFirstName = getVal(colMap.firstName);
+        const rawLastName = getVal(colMap.lastName);
+        const rawEmail = getVal(colMap.email);
+        const rawBirthDate = getVal(colMap.birthDate);
+        const rawBasicSalary = getVal(colMap.basicSalary);
+        const rawGroup = getVal(colMap.group);
+        const rawStatus = getVal(colMap.status);
+        const rawDescription = getVal(colMap.description);
+        
+        let rawUsername = getVal(colMap.username);
+        if (!rawUsername && rawFirstName) {
+          rawUsername = (rawFirstName + (rawLastName || '')).toLowerCase().replace(/[^a-z0-9]/g, '') + Math.floor(100 + Math.random() * 900);
+        }
+
+        if (!rawUsername) {
+          errors.push('Username wajib diisi atau dispesifikasikan');
+        } else if (!/^[a-zA-Z0-9_.-]+$/.test(rawUsername)) {
+          errors.push('Username hanya boleh berisi huruf, angka, titik, strip, dan underscore');
+        }
+
+        if (!rawFirstName) {
+          errors.push('Nama Depan tidak boleh kosong');
+        }
+
+        if (!rawEmail) {
+          errors.push('Email tidak boleh kosong');
+        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+          errors.push('Format email tidak valid');
+        }
+
+        let parsedBirthDate = '';
+        if (!rawBirthDate) {
+          errors.push('Tanggal Lahir tidak boleh kosong');
+        } else {
+          const d = new Date(rawBirthDate);
+          if (isNaN(d.getTime())) {
+            errors.push('Format Tanggal Lahir salah (harus format tanggal valid)');
+          } else {
+            parsedBirthDate = d.toISOString();
+          }
+        }
+
+        let parsedSalary = 0;
+        if (!rawBasicSalary) {
+          errors.push('Gaji Pokok wajib diisi');
+        } else {
+          const cleanSalary = rawBasicSalary.replace(/[^0-9.]/g, '');
+          const s = parseFloat(cleanSalary);
+          if (isNaN(s) || s <= 0) {
+            errors.push('Gaji Pokok harus berupa angka positif');
+          } else {
+            parsedSalary = s;
+          }
+        }
+
+        if (!rawGroup) {
+          errors.push('Grup / Departemen tidak boleh kosong');
+        }
+
+        let matchedStatus = 'Active';
+        if (!rawStatus) {
+          errors.push('Status wajib diisi (Active, Inactive, Contract)');
+        } else {
+          const sNormalized = rawStatus.toLowerCase();
+          if (sNormalized.startsWith('act') || sNormalized === 'aktif' || sNormalized === 'active') {
+            matchedStatus = 'Active';
+          } else if (sNormalized.startsWith('inact') || sNormalized === 'nonaktif' || sNormalized === 'inactive') {
+            matchedStatus = 'Inactive';
+          } else if (sNormalized.startsWith('con') || sNormalized === 'kontrak' || sNormalized === 'contract') {
+            matchedStatus = 'Contract';
+          } else {
+            errors.push('Status tidak dikenal (harus Active, Inactive, atau Contract)');
+          }
+        }
+
+        const employee: Employee = {
+          username: rawUsername,
+          firstName: rawFirstName,
+          lastName: rawLastName,
+          email: rawEmail,
+          birthDate: parsedBirthDate || new Date().toISOString(),
+          basicSalary: parsedSalary,
+          group: rawGroup,
+          status: matchedStatus,
+          description: rawDescription || `Diimpor dari file CSV pada ${new Date().toLocaleDateString('id-ID')}`
+        };
+
+        parsedRows.push({
+          employee,
+          errors,
+          isValid: errors.length === 0
+        });
+      }
+
+      setImportRows(parsedRows);
+      if (parsedRows.length > 0) {
+        const validCount = parsedRows.filter(r => r.isValid).length;
+        if (validCount > 0) {
+          onTriggerNotification(`Berhasil membaca ${parsedRows.length} data. ${validCount} baris siap diimpor!`, 'green');
+        } else {
+          onTriggerNotification(`Menemukan ${parsedRows.length} data, namun semuanya memiliki error validasi.`, 'red');
+        }
+      } else {
+        onTriggerNotification('Tidak ditemukan baris data karyawan di dalam berkas CSV.', 'yellow');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const parseCSVLine = (line: string, sep: string) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"' || char === "'") {
+        inQuotes = !inQuotes;
+      } else if (char === sep && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  const handleCommitImport = () => {
+    const validEmployees = importRows.filter(r => r.isValid).map(r => r.employee);
+    if (validEmployees.length === 0) {
+      onTriggerNotification('Tidak ada data karyawan valid untuk diimpor.', 'red');
+      return;
+    }
+    
+    onImportEmployees(validEmployees);
+    setIsImportModalOpen(false);
+    setImportRows([]);
+  };
+
+  const downloadCSVTemplate = () => {
+    const headers = ['Username', 'First Name', 'Last Name', 'Email', 'Birth Date', 'Basic Salary', 'Group', 'Status', 'Description'];
+    const sampleRows = [
+      ['budi99', 'Budi', 'Pratama', 'budi.pratama@email.com', '1995-05-12', '8500000', 'IT', 'Active', 'Bergabung April 2024'],
+      ['siti88', 'Siti', 'Aminah', 'siti.aminah@email.com', '1992-11-23', '9200000', 'Finance', 'Contract', 'Karyawan kontrak baru']
+    ];
+    
+    const csvContent = "sep=;\r\n" + 
+      headers.join(';') + "\r\n" + 
+      sampleRows.map(r => r.map(c => `"${c}"`).join(';')).join('\r\n');
+      
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "empowerhr_import_template.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Edit and Delete Simulation Handlers with specified color notifications
@@ -478,6 +819,157 @@ export default function EmployeeListPage({
             </div>
           </div>
         </div>
+
+        {/* Toggle Charts button */}
+        <div className="flex justify-end mt-2">
+          <button
+            onClick={() => setShowStatsVisuals(!showStatsVisuals)}
+            className="flex items-center gap-2 bg-white hover:bg-gray-50 text-slate-700 border border-gray-200 font-bold text-xs px-3.5 py-2 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer"
+          >
+            {showStatsVisuals ? (
+              <>
+                <EyeOff className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
+                Sembunyikan Grafik Statistik
+              </>
+            ) : (
+              <>
+                <BarChart2 className="w-3.5 h-3.5 text-blue-600 animate-bounce" />
+                Tampilkan Grafik Statistik
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Expandable Visual Charts Section */}
+        <AnimatePresence>
+          {showStatsVisuals && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-2">
+                
+                {/* Chart 1: Departemen Distribution */}
+                <div className="bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col h-[320px]">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                      <Building2 className="w-4 h-4 text-blue-600" />
+                      Jumlah Karyawan per Departemen
+                    </h4>
+                  </div>
+                  <div className="flex-1 w-full min-h-0">
+                    {chartsData.departmentData.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-xs text-gray-400 italic">Tidak ada data</div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={chartsData.departmentData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                          <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#64748B' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 9, fill: '#64748B' }} axisLine={false} tickLine={false} />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1E293B', borderRadius: '8px', border: 'none', color: '#F8FAFC', fontSize: '11px' }}
+                            labelStyle={{ fontWeight: 'bold' }}
+                          />
+                          <Bar dataKey="count" fill="#3B82F6" radius={[4, 4, 0, 0]} maxBarSize={30}>
+                            {chartsData.departmentData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={index === 0 ? '#1D4ED8' : '#3B82F6'} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+
+                {/* Chart 2: Status Distribution (Pie Chart) */}
+                <div className="bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col h-[320px]">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                      <PieIcon className="w-4 h-4 text-emerald-600" />
+                      Proporsi Status Karyawan
+                    </h4>
+                  </div>
+                  <div className="flex-1 w-full min-h-0 flex items-center justify-center relative">
+                    {chartsData.statusData.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-xs text-gray-400 italic">Tidak ada data</div>
+                    ) : (
+                      <div className="w-full h-full flex flex-col sm:flex-row items-center justify-center">
+                        <div className="w-1/2 h-full min-h-[160px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={chartsData.statusData}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={45}
+                                outerRadius={65}
+                                paddingAngle={3}
+                                dataKey="value"
+                              >
+                                {chartsData.statusData.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip
+                                contentStyle={{ backgroundColor: '#1E293B', borderRadius: '8px', border: 'none', color: '#F8FAFC', fontSize: '11px' }}
+                              />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="w-1/2 flex flex-col justify-center gap-2 pl-4">
+                          {chartsData.statusData.map((entry, idx) => (
+                            <div key={idx} className="flex items-center gap-2 text-xs">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
+                              <span className="font-semibold text-slate-700 capitalize">{entry.name}:</span>
+                              <span className="text-slate-500 font-mono">{entry.value} ({Math.round(entry.value / (stats.total || 1) * 100) || 0}%)</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Chart 3: Salary Distribution (Area/Bar Chart) */}
+                <div className="bg-white p-5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col h-[320px]">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wider">
+                      <TrendingUp className="w-4 h-4 text-purple-600" />
+                      Rentang Gaji Pokok (Rupiah)
+                    </h4>
+                  </div>
+                  <div className="flex-1 w-full min-h-0">
+                    {employees.length === 0 ? (
+                      <div className="h-full flex items-center justify-center text-xs text-gray-400 italic">Tidak ada data</div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartsData.salaryRangeData} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
+                          <defs>
+                            <linearGradient id="colorSalary" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.2}/>
+                              <stop offset="95%" stopColor="#8B5CF6" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                          <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#64748B' }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 9, fill: '#64748B' }} axisLine={false} tickLine={false} />
+                          <Tooltip 
+                            contentStyle={{ backgroundColor: '#1E293B', borderRadius: '8px', border: 'none', color: '#F8FAFC', fontSize: '11px' }}
+                          />
+                          <Area type="monotone" dataKey="count" stroke="#8B5CF6" strokeWidth={2} fillOpacity={1} fill="url(#colorSalary)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         
         {/* Advanced Filters Card */}
         <div id="filters-card" className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200/80 space-y-4">
@@ -569,21 +1061,37 @@ export default function EmployeeListPage({
               )}
             </p>
           </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <button
+              id="import-csv-button"
+              onClick={() => setIsImportModalOpen(true)}
+              className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold text-xs px-3 py-2 rounded-lg transition-all shadow-xs active:scale-95 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-indigo-500" />
+              Impor CSV
+            </button>
             <button
               id="export-csv-button"
               onClick={handleExportCSV}
-              className="flex items-center gap-2 bg-white hover:bg-gray-50 text-slate-700 border border-gray-200 font-medium text-sm px-4 py-2 rounded-lg transition-all shadow-sm active:scale-95 cursor-pointer"
+              className="flex items-center gap-2 bg-white hover:bg-gray-50 text-slate-700 border border-gray-200 font-medium text-xs px-3 py-2 rounded-lg transition-all shadow-xs active:scale-95 cursor-pointer"
             >
-              <Download className="w-4 h-4 text-slate-500" />
+              <Download className="w-3.5 h-3.5 text-slate-500" />
               Ekspor CSV
+            </button>
+            <button
+              id="export-excel-button"
+              onClick={handleExportExcel}
+              className="flex items-center gap-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-semibold text-xs px-3 py-2 rounded-lg transition-all shadow-xs active:scale-95 cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5 text-emerald-600" />
+              Ekspor Excel
             </button>
             <button
               id="add-employee-button"
               onClick={onAddClick}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2 rounded-lg transition-all shadow-md active:scale-95 cursor-pointer"
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded-lg transition-all shadow-md active:scale-95 cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="w-3.5 h-3.5" />
               Tambah Karyawan
             </button>
           </div>
@@ -1084,6 +1592,200 @@ export default function EmployeeListPage({
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* CSV Import Modal with Drag-and-Drop, Real-time Validation, and Preview */}
+      <AnimatePresence>
+        {isImportModalOpen && (
+          <div id="import-modal-backdrop" className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
+            <motion.div
+              id="import-modal-card"
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: 'spring', duration: 0.4 }}
+              className="bg-white rounded-2xl border border-gray-200 shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+            >
+              {/* Modal Header */}
+              <div className="bg-slate-50 border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                    <Upload className="w-4.5 h-4.5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Impor Massal Karyawan (CSV)</h3>
+                    <p className="text-[11px] text-gray-500">Unggah berkas untuk menambahkan beberapa karyawan sekaligus</p>
+                  </div>
+                </div>
+                <button
+                  id="close-import-modal-btn"
+                  onClick={() => {
+                    setIsImportModalOpen(false);
+                    setImportRows([]);
+                  }}
+                  className="p-1.5 hover:bg-gray-200/50 text-gray-400 hover:text-gray-600 rounded-lg transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal Content */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                {/* Instruction & Template downloader */}
+                <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-blue-800 uppercase tracking-wider">Gunakan Template yang Benar</h4>
+                    <p className="text-xs text-slate-600 leading-relaxed max-w-xl">
+                      Pastikan kolom berkas CSV Anda memiliki nama header yang cocok: <strong className="text-blue-900 font-mono">Username, First Name, Last Name, Email, Birth Date, Basic Salary, Group, Status, Description</strong>. Gunakan titik koma (<strong className="font-mono font-bold">;</strong>) sebagai pembatas untuk kecocokan Excel 100%.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={downloadCSVTemplate}
+                    className="shrink-0 flex items-center gap-1.5 bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 font-bold text-xs px-3.5 py-2 rounded-lg transition-colors cursor-pointer shadow-xs active:scale-95"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Unduh Template CSV
+                  </button>
+                </div>
+
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDragging(false);
+                    const file = e.dataTransfer.files?.[0];
+                    if (file) processCSVFile(file);
+                  }}
+                  className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-all cursor-pointer ${
+                    isDragging 
+                      ? 'border-indigo-500 bg-indigo-50/30 ring-4 ring-indigo-50' 
+                      : 'border-gray-300 hover:border-indigo-400 hover:bg-slate-50/30'
+                  }`}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleCSVImportSelected}
+                    accept=".csv"
+                    className="hidden"
+                  />
+                  <div className="p-3 bg-indigo-50 text-indigo-600 rounded-full mb-3 shadow-inner">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <p className="text-xs font-bold text-slate-700">Tarik dan taruh berkas CSV Anda di sini</p>
+                  <p className="text-[11px] text-gray-400 mt-1">Atau klik untuk menelusuri dari penyimpanan komputer Anda (Maksimal 5MB)</p>
+                </div>
+
+                {/* Import Rows Preview Section */}
+                {importRows.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <FileText className="w-4 h-4 text-slate-500" />
+                        Pratinjau Hasil Pembacaan Berkas ({importRows.length} Baris Ditemukan)
+                      </h4>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full font-bold">
+                          {importRows.filter(r => r.isValid).length} Valid
+                        </span>
+                        {importRows.filter(r => !r.isValid).length > 0 && (
+                          <span className="bg-red-50 text-red-700 px-2.5 py-1 rounded-full font-bold">
+                            {importRows.filter(r => !r.isValid).length} Error
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border border-gray-200 rounded-xl overflow-hidden shadow-xs max-h-64 overflow-y-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead className="bg-slate-50 border-b border-gray-200 sticky top-0 z-10">
+                          <tr>
+                            <th className="p-2.5 font-bold text-slate-700">Baris</th>
+                            <th className="p-2.5 font-bold text-slate-700">Username</th>
+                            <th className="p-2.5 font-bold text-slate-700">Nama Lengkap</th>
+                            <th className="p-2.5 font-bold text-slate-700">Email</th>
+                            <th className="p-2.5 font-bold text-slate-700">Departemen</th>
+                            <th className="p-2.5 font-bold text-slate-700">Gaji</th>
+                            <th className="p-2.5 font-bold text-slate-700">Status</th>
+                            <th className="p-2.5 font-bold text-slate-700">Status Validasi</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 bg-white">
+                          {importRows.map((row, idx) => (
+                            <tr key={idx} className={row.isValid ? 'hover:bg-slate-50/50' : 'bg-red-50/10 hover:bg-red-50/20'}>
+                              <td className="p-2.5 font-mono text-gray-400 text-center">{idx + 1}</td>
+                              <td className="p-2.5 font-semibold text-slate-700">{row.employee.username}</td>
+                              <td className="p-2.5 text-slate-600">{row.employee.firstName} {row.employee.lastName}</td>
+                              <td className="p-2.5 text-slate-500">{row.employee.email}</td>
+                              <td className="p-2.5 text-slate-600">{row.employee.group}</td>
+                              <td className="p-2.5 font-mono text-slate-600">{formatRupiah(row.employee.basicSalary).split(',')[0]}</td>
+                              <td className="p-2.5">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  row.employee.status === 'Active' ? 'bg-green-50 text-green-700' :
+                                  row.employee.status === 'Inactive' ? 'bg-red-50 text-red-700' :
+                                  'bg-amber-50 text-amber-700'
+                                }`}>
+                                  {row.employee.status}
+                                </span>
+                              </td>
+                              <td className="p-2.5">
+                                {row.isValid ? (
+                                  <span className="text-emerald-600 font-semibold flex items-center gap-1 text-[11px]">
+                                    <Check className="w-3.5 h-3.5" /> Ready
+                                  </span>
+                                ) : (
+                                  <div className="text-red-600 space-y-0.5 max-w-xs">
+                                    {row.errors.map((err, errIdx) => (
+                                      <p key={errIdx} className="text-[10px] leading-tight">• {err}</p>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-4 border-t border-gray-100 bg-slate-50 flex items-center justify-between shrink-0">
+                <p className="text-xs text-gray-500">
+                  Data yang diimpor akan ditambahkan secara massal. Username yang bertabrakan akan otomatis diperbarui.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsImportModalOpen(false);
+                      setImportRows([]);
+                    }}
+                    className="px-4 py-2 border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCommitImport}
+                    disabled={importRows.filter(r => r.isValid).length === 0}
+                    className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg shadow-md transition-all cursor-pointer active:scale-98 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Konfirmasi Impor ({importRows.filter(r => r.isValid).length} Karyawan)
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

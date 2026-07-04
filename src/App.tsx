@@ -109,6 +109,34 @@ export default function App() {
     triggerNotification(`Karyawan ${updatedEmp.firstName} ${updatedEmp.lastName} (${updatedEmp.username}) berhasil diperbarui!`, 'yellow');
   };
 
+  const handleImportEmployees = (imported: Employee[]) => {
+    const newEmployeeList = [...employees];
+    let addedCount = 0;
+    let updatedCount = 0;
+    
+    imported.forEach(newEmp => {
+      const idx = newEmployeeList.findIndex(e => e.username === newEmp.username);
+      if (idx > -1) {
+        newEmployeeList[idx] = newEmp;
+        updatedCount++;
+      } else {
+        newEmployeeList.unshift(newEmp);
+        addedCount++;
+      }
+    });
+    
+    setEmployees(newEmployeeList);
+    saveEmployeesToStorage(newEmployeeList);
+    
+    if (updatedCount > 0 && addedCount > 0) {
+      triggerNotification(`Impor sukses! Berhasil menambahkan ${addedCount} karyawan baru dan memperbarui ${updatedCount} data karyawan.`, 'green');
+    } else if (addedCount > 0) {
+      triggerNotification(`Impor sukses! Berhasil menambahkan ${addedCount} karyawan baru ke database.`, 'green');
+    } else if (updatedCount > 0) {
+      triggerNotification(`Impor sukses! Berhasil memperbarui ${updatedCount} data karyawan.`, 'green');
+    }
+  };
+
   const handleDeleteEmployee = (username: string) => {
     const updated = employees.filter(emp => emp.username !== username);
     setEmployees(updated);
@@ -198,6 +226,7 @@ export default function App() {
             onTriggerNotification={triggerNotification}
             onDeleteEmployee={handleDeleteEmployee}
             onUpdateEmployee={handleUpdateEmployee}
+            onImportEmployees={handleImportEmployees}
           />
         )}
 
