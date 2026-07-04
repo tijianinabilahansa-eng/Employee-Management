@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Bell, Edit, Trash2, CheckCircle, X } from 'lucide-react';
 import { Employee, PageType, SearchState } from './types';
-import { getEmployeesFromStorage, saveEmployeesToStorage } from './data/dummyEmployees';
+import { getEmployeesFromStorage, normalizeEmployees, saveEmployeesToStorage } from './data/dummyEmployees';
 import LoginPage from './components/LoginPage';
 import EmployeeListPage from './components/EmployeeListPage';
 import AddEmployeePage from './components/AddEmployeePage';
@@ -92,7 +92,8 @@ export default function App() {
   };
 
   const handleSaveEmployee = (newEmp: Employee) => {
-    const updated = [newEmp, ...employees];
+    const normalizedEmployee = normalizeEmployees([newEmp])[0];
+    const updated = [normalizedEmployee, ...employees];
     setEmployees(updated);
     saveEmployeesToStorage(updated);
     setCurrentPage('LIST');
@@ -100,7 +101,8 @@ export default function App() {
   };
 
   const handleUpdateEmployee = (updatedEmp: Employee) => {
-    const updated = employees.map(emp => emp.username === updatedEmp.username ? updatedEmp : emp);
+    const normalizedEmployee = normalizeEmployees([updatedEmp])[0];
+    const updated = employees.map(emp => emp.username === normalizedEmployee.username ? normalizedEmployee : emp);
     setEmployees(updated);
     saveEmployeesToStorage(updated);
     if (selectedEmployee && selectedEmployee.username === updatedEmp.username) {
@@ -110,11 +112,12 @@ export default function App() {
   };
 
   const handleImportEmployees = (imported: Employee[]) => {
+    const normalizedImported = normalizeEmployees(imported as unknown[]);
     const newEmployeeList = [...employees];
     let addedCount = 0;
     let updatedCount = 0;
     
-    imported.forEach(newEmp => {
+    normalizedImported.forEach(newEmp => {
       const idx = newEmployeeList.findIndex(e => e.username === newEmp.username);
       if (idx > -1) {
         newEmployeeList[idx] = newEmp;
@@ -138,7 +141,8 @@ export default function App() {
   };
 
   const handleDeleteEmployee = (username: string) => {
-    const updated = employees.filter(emp => emp.username !== username);
+    const safeUsername = username?.trim();
+    const updated = employees.filter(emp => emp.username !== safeUsername);
     setEmployees(updated);
     saveEmployeesToStorage(updated);
   };

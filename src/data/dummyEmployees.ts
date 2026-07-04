@@ -5,6 +5,36 @@
 
 import { Employee } from '../types';
 
+export function normalizeEmployees(input: unknown[]): Employee[] {
+  if (!Array.isArray(input)) return [];
+
+  return input.map((item, index) => {
+    const employee = (item ?? {}) as Partial<Employee> & Record<string, unknown>;
+
+    const username = String(employee.username || `employee-${index + 1}`).trim();
+    const firstName = String(employee.firstName || 'Employee').trim();
+    const lastName = String(employee.lastName || String(index + 1)).trim();
+    const email = String(employee.email || `employee${index + 1}@example.com`).trim();
+    const birthDate = typeof employee.birthDate === 'string' && employee.birthDate ? employee.birthDate : new Date().toISOString();
+    const basicSalary = Number(employee.basicSalary ?? 0);
+    const status = String(employee.status || 'Active').trim() || 'Active';
+    const group = String(employee.group || 'Unassigned').trim() || 'Unassigned';
+    const description = typeof employee.description === 'string' && employee.description ? employee.description : new Date().toISOString();
+
+    return {
+      username: username || `employee-${index + 1}`,
+      firstName: firstName || 'Employee',
+      lastName: lastName || String(index + 1),
+      email: email || `employee${index + 1}@example.com`,
+      birthDate,
+      basicSalary: Number.isFinite(basicSalary) ? basicSalary : 0,
+      status,
+      group,
+      description
+    };
+  });
+}
+
 export const DUMMY_GROUPS = [
   'IT Support',
   'Human Resources',
@@ -95,7 +125,8 @@ export function getEmployeesFromStorage(): Employee[] {
   const data = localStorage.getItem('employee_management_employees');
   if (data) {
     try {
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      return normalizeEmployees(parsed);
     } catch (e) {
       console.error('Error parsing employee data from localStorage', e);
     }
