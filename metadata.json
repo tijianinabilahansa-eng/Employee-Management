@@ -1,0 +1,6 @@
+{
+  "name": "Employee Management",
+  "description": "An interactive Employee Management dashboard with pagination, advanced search, sorting, detailed information pages, and user authentication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
