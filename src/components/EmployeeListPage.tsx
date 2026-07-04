@@ -560,13 +560,20 @@ export default function EmployeeListPage({
   };
 
   const parseCSVLine = (line: string, sep: string) => {
-    const result = [];
+    const result: string[] = [];
     let current = '';
     let inQuotes = false;
+
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
-      if (char === '"' || char === "'") {
-        inQuotes = !inQuotes;
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
       } else if (char === sep && !inQuotes) {
         result.push(current.trim());
         current = '';
@@ -574,6 +581,7 @@ export default function EmployeeListPage({
         current += char;
       }
     }
+
     result.push(current.trim());
     return result;
   };
@@ -617,13 +625,14 @@ export default function EmployeeListPage({
   // Edit and Delete Simulation Handlers with specified color notifications
   const handleEditClick = (emp: Employee) => {
     setEditingEmployee(emp);
-    setEditFirstName(emp.firstName);
-    setEditLastName(emp.lastName);
-    setEditEmail(emp.email);
-    setEditBasicSalary(emp.basicSalary.toString());
-    setEditGroup(emp.group);
-    setEditStatus(emp.status);
-    setEditBirthDate(emp.birthDate.substring(0, 10)); // YYYY-MM-DD
+    setEditFirstName(emp.firstName || '');
+    setEditLastName(emp.lastName || '');
+    setEditEmail(emp.email || '');
+    setEditBasicSalary((emp.basicSalary ?? 0).toString());
+    setEditGroup(emp.group || '');
+    setEditStatus(emp.status || DUMMY_STATUSES[0] || 'Active');
+    const safeBirthDate = typeof emp.birthDate === 'string' ? emp.birthDate.slice(0, 10) : '';
+    setEditBirthDate(safeBirthDate);
     setEditDescription(emp.description || '');
     setEditErrors({});
     setIsEditGroupDropdownOpen(false);
